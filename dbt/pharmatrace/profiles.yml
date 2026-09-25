@@ -1,0 +1,9 @@
+pharmatrace:
+  outputs:
+    dev:
+      type: duckdb
+      path: /opt/airflow/project/data/pharmatrace.duckdb
+      threads: 1
+      settings:
+        memory_limit: '8GB'
+  target: dev

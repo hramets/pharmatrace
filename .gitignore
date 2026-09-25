@@ -1,0 +1,12 @@
+venv/
+data/bronze/*
+data/bronze_active/*
+data/*.duckdb
+dbt/pharmatrace/target/
+dbt/pharmatrace/logs/
+__pycache__/
+*.pyc
+.env
+logs/
+config/
+dbt/pharmatrace/dbt_packages/

@@ -1,0 +1,117 @@
+version: 2
+
+models:
+  - name: fact_event
+    description: "One row per adverse event report submitted to the FDA (grain: one report). Holds report dates, seriousness flags and patient attributes. Reports are self-reported and are not clinical evidence. Join to fact_event_drug and fact_event_reaction on id = event_id."
+    columns:
+      - name: id
+        description: "Primary key. FDA safety report ID (safetyreportid), one per report."
+        data_tests:
+          - unique
+          - not_null
+      - name: transmission_date
+        description: "DATE the report record was created. Used as the incremental load watermark by the pipeline; not the date the event happened."
+        data_tests:
+          - not_null
+      - name: receive_date
+        description: "DATE the FDA first received the report."
+      - name: serious
+        description: "Boolean. True if the report is classified as serious, False otherwise (the source codes this as 1 / 2 and the pipeline converts it). Filter with serious = true."
+        data_tests:
+          - not_null
+      - name: seriousness_death
+        description: "True if the event resulted in death. False means the flag was absent in the source."
+      - name: seriousness_hospitalization
+        description: "True if the event resulted in hospitalization. False means the flag was absent in the source."
+      - name: seriousness_life_threatening
+        description: "True if the event was life threatening. False means the flag was absent in the source."
+      - name: seriousness_disabling
+        description: "True if the event resulted in disability. False means the flag was absent in the source."
+      - name: seriousness_congenital_anomaly
+        description: "True if the event resulted in a congenital anomaly. False means the flag was absent in the source."
+      - name: seriousness_other
+        description: "True if the event resulted in another serious condition. False means the flag was absent in the source."
+      - name: patient_onset_age
+        description: "Patient age when the event first occurred. Numeric; the unit is in patient_onset_age_unit. NULL if not reported."
+      - name: patient_onset_age_unit
+        description: "Unit of patient_onset_age: decade, year, month, week, day or hour. Do not average ages without converting to one unit."
+      - name: patient_sex
+        description: "Patient sex: male, female or unknown."
+      - name: patient_weight
+        description: "Patient weight in kg. NULL if not reported."
+
+  - name: fact_event_drug
+    description: "One row per drug entry per report (grain: report x drug x role x start date x dosage). A single report can have many rows, and the same drug can appear several times with different dosages or dates, so always count DISTINCT event_id when counting reports. Drugs and reactions are both linked to the report, not to each other: the data does not say which drug caused which reaction."
+    columns:
+      - name: event_id
+        description: "Foreign key to fact_event.id."
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('fact_event')
+              field: id
+      - name: drug_id
+        description: "Foreign key to dim_drug_ingredient.id. Can be NULL when the active substance was missing in the source."
+        data_tests:
+          # relationships ignores NULLs, so this checks only non-NULL values
+          - relationships:
+              to: ref('dim_drug_ingredient')
+              field: id
+          # surfaces the suspected NULL drug_id bug; warn so it doesn't block the run
+          - not_null:
+              config:
+                severity: warn
+      - name: drug_role
+        description: "Role of the drug in the report as judged by the reporter: suspect (considered the cause), concomitant (taken alongside), interacting (believed to have interacted with the suspect drug) or unknown."
+        data_tests:
+          - accepted_values:
+              # values taken from the OpenFDA docs, not yet checked against your data
+              values: ['suspect', 'concomitant', 'interacting', 'unknown']
+              config:
+                severity: warn
+      - name: drug_start_date
+        description: "DATE the patient started taking the drug. Partial source dates are padded (missing month or day becomes 01). NULL if not reported."
+      - name: drug_end_date
+        description: "DATE the patient stopped taking the drug. Same padding rules as drug_start_date. NULL if not reported or ongoing."
+      - name: dosage
+        description: "Numeric dose from the structured dosage field. NULL if not reported or not numeric."
+      - name: dosage_unit
+        description: "Unit of dosage: kg, g, mg or mcg. NULL if not reported."
+      - name: cumulative_dosage
+        description: "Cumulative dose taken until the first reaction. NULL if not reported."
+      - name: cumulative_dosage_unit
+        description: "Unit of cumulative_dosage: kg, g, mg or mcg. NULL if not reported."
+
+  - name: fact_event_reaction
+    description: "One row per reaction per report (grain: report x reaction). Reactions are MedDRA preferred terms in British English spelling. A report can list several reactions."
+    columns:
+      - name: event_id
+        description: "Foreign key to fact_event.id."
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('fact_event')
+              field: id
+      - name: reaction_name
+        description: "Reaction as a MedDRA preferred term, lowercased and cleaned of special characters."
+        data_tests:
+          - not_null
+      - name: reaction_outcome
+        description: "Outcome of the reaction at last observation: recovered, recovering, not recovered, recovered with sequelae, fatal or unknown."
+
+  - name: dim_drug_ingredient
+    description: "One row per distinct brand name and active substance pair. Brand names are normalized free text (lowercased, dosage and formulation suffixes removed), so spelling variants may still produce separate rows. Combination products keep all ingredients in one string separated by a backslash."
+    columns:
+      - name: id
+        description: "Primary key. Stable integer surrogate key assigned when the pair first appears."
+        data_tests:
+          - unique
+          - not_null
+      - name: medicinal_product
+        description: "Normalized brand or trade name as reported (e.g. advil)."
+        data_tests:
+          - not_null
+      - name: active_substance
+        description: "Normalized active ingredient (e.g. ibuprofen). A combination product holds several ingredients separated by a backslash. NULL in the source is stored as 'unknown'."
+        data_tests:
+          - not_null

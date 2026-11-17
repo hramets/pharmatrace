@@ -8,15 +8,15 @@
 
 with new_drugs as (
     select distinct
-        coalesce(medicinal_product, 'unknown') as medicinal_product,
-        coalesce(active_substance, 'unknown') as active_substance
+        medicinal_product,
+        active_substance
     from {{ ref('int_event_drugs') }}
     {% if is_incremental() %}
     where
         (medicinal_product, active_substance) not in (
             select distinct
-                medicinal_product,
-                active_substance
+                coalesce(medicinal_product, 'unknown'),
+                coalesce(active_substance, 'unknown')
             from {{ this }}
         )
     {% endif %}

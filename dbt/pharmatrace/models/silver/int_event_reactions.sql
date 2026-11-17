@@ -1,11 +1,7 @@
 {{ 
 	config(
 		schema='silver',
-		materialized='incremental',
-		unique_key=[
-			'event_id',
-			'reaction_name'
-		]
+		materialized='table'
 	) 
 }}
 

@@ -23,7 +23,7 @@ select
     sed.cumulative_dosage_unit
 from {{ ref('int_event_drugs') }} sed
 left join {{ ref('dim_drug_ingredient') }} i
-    on i.medicinal_product = sed.medicinal_product and i.active_substance = sed.active_substance
+    on i.medicinal_product = sed.medicinal_product and coalesce(i.active_substance, 'unknown') = coalesce(sed.active_substance, 'unknown')  
 {% if is_incremental() %}
 where sed.event_id not in (select distinct event_id from {{ this }})
 {% endif %}

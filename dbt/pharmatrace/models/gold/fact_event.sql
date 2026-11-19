@@ -22,6 +22,3 @@ select
     patient_sex,
     patient_weight
 from {{ ref('int_events') }}
-{% if is_incremental() %}
-where transmission_date >= (select max(transmission_date) from {{ this }})
-{% endif %}

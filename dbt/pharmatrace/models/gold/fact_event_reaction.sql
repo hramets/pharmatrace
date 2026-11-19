@@ -3,9 +3,9 @@
 		schema='gold',
 		materialized='incremental',
 		unique_key=[
-			'event_id',
-			'reaction_name'
-		]
+			'event_id'
+		],
+		incremental_strategy='delete+insert'
 	) 
 }}
 

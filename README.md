@@ -36,7 +36,7 @@ data/bronze/  (raw JSON files on disk)
     ▼
 data/bronze_active/  (current batch)
     │
-    ▼  dbt (10 models)
+    ▼  dbt (10 models + data tests)
     │
     ├── Silver layer (DuckDB)
     │   ├── stg_events_raw          Flattens bronze JSON, tracks source_file
@@ -76,9 +76,9 @@ PharmaTrace models this correctly as four separate tables:
  
 | Table | Grain | Primary key |
 |---|---|---|
-| `gold.fact_event` | One row per report | `id` (surrogate) |
-| `gold.fact_event_drug` | One row per drug per report | composite: `event_id + drug_id + drug_role + drug_start_date + dosage` |
-| `gold.fact_event_reaction` | One row per reaction per report | composite: `event_id + reaction_name` |
+| `gold.fact_event` | One row per report | `id` (FDA `safetyreportid`) |
+| `gold.fact_event_drug` | One row per report × drug × role × start date × dosage | none (child rows replaced per report via `event_id`) |
+| `gold.fact_event_reaction` | One row per report × reaction | none (child rows replaced per report via `event_id`) |
 | `gold.dim_drug_ingredient` | One row per brand name / substance pair | `id` (surrogate, stable integer) |
  
 Drugs and reactions are **siblings** under the same report — not linked to each other — because the raw data does not tell us which specific drug caused which specific reaction.
@@ -89,10 +89,22 @@ Drugs and reactions are **siblings** under the same report — not linked to eac
  
 **Active substance kept as-is** — combination products list multiple ingredients separated by `\` (e.g. `CALCIUM CHLORIDE\DEXTROSE\SODIUM CHLORIDE`). The field is stored as a single normalized string rather than split into separate rows. Splitting was evaluated but introduced more ambiguity than value for this dataset — the combination itself is meaningful clinical context.
  
-**Seriousness flags** — the source uses `1` for present and absent/NULL for not present. Silver normalises these to `1`/`0` booleans for all seven seriousness fields (`death`, `hospitalization`, `life_threatening`, `disabling`, `congenital_anomaly`, `other`, and the top-level `serious`).
+**Missing values** — `medicinal_product` and `active_substance` are join keys, and `NULL = NULL` is never true in SQL, so a NULL key never matches. Silver replaces NULL and empty strings (including values that become empty after cleaning) with the sentinel `'unknown'` once, in `int_event_drugs`, so every downstream join is a plain equality.
+
+**Seriousness flags** — the source uses `1` for present and absent/NULL for not present, and the top-level `serious` field uses `1`/`2`. Silver converts all seven seriousness fields (`serious`, `death`, `hospitalization`, `life_threatening`, `disabling`, `congenital_anomaly`, `other`) to booleans.
  
-**Incremental loading** — all six silver models are incremental. Raw models track `source_file` to avoid reprocessing bronze files already loaded. Intermediate models filter by `transmission_date` watermark or event ID presence to avoid reprocessing records already in the table.
+**Incremental loading** — the layers load differently, on purpose:
+- **Staging (`stg_*`)** is incremental. Each model tracks `source_file` and only reads bronze files not yet in the table.
+- **Intermediate (`int_*`)** is rebuilt as a table on every run from staging, so cleaning logic always reflects the current rules and no stale or duplicate rows can build up in silver.
+- **Gold** is incremental. `fact_event` upserts on `id`. `dim_drug_ingredient` only inserts new brand/substance pairs and assigns `max(id) + row_number()`, so existing surrogate keys never change. `fact_event_drug` and `fact_event_reaction` use the `delete+insert` strategy on `event_id`: all existing rows of a report are deleted and replaced with its current rows, so a revised report cannot leave stale child rows behind.
  
+**Data quality** — gold models are documented and tested in `models/gold/schema.yml`: `unique` and `not_null` on primary keys, `relationships` for foreign keys (`event_id` → `fact_event.id`, `drug_id` → `dim_drug_ingredient.id`), `not_null` on required columns, and `accepted_values` on `drug_role`. Run them with `dbt test`.
+
+**Known limitations**
+- `fact_event` upserts by `id` without comparing versions, so a backfill that loads an older version of a report after a newer one would overwrite the newer version.
+- Brand names are free text; spelling variants can still produce separate rows in `dim_drug_ingredient`.
+- Combination products are kept as one string, not split into ingredients.
+
 **Batch processing** — DuckDB reads all files in `bronze_active/` on each dbt run. Batch size is configurable in `scripts/batch_manager.py` (`BATCH_SIZE = 50`). This lets the pipeline handle arbitrarily large historical loads without running out of memory — it processes N files, loads them to DuckDB, deletes them, and repeats.
  
 ---
@@ -138,7 +150,9 @@ pharmatrace/
 │       │       ├── dim_drug_ingredient.sql
 │       │       ├── fact_event.sql
 │       │       ├── fact_event_drug.sql
-│       │       └── fact_event_reaction.sql
+│       │       ├── fact_event_reaction.sql
+│       │       └── schema.yml           # Column docs and data tests for gold
+│       ├── tests/                       # Custom (singular) dbt tests
 │       ├── dbt_project.yml
 │       └── profiles.yml
 ├── ingestion/
@@ -216,9 +230,9 @@ The DAG runs two tasks in sequence:
 select
     d.active_substance,
     count(distinct fed.event_id) as total_reports,
-    count(distinct case when fe.serious = 1 then fed.event_id end) as serious_reports,
+    count(distinct case when fe.serious then fed.event_id end) as serious_reports,
     round(
-        count(distinct case when fe.serious = 1 then fed.event_id end) * 100.0 /
+        count(distinct case when fe.serious then fed.event_id end) * 100.0 /
         count(distinct fed.event_id), 1
     ) as serious_pct
 from gold.fact_event_drug fed
@@ -254,7 +268,7 @@ join gold.fact_event_drug b
 join gold.fact_event fe on a.event_id = fe.id
 join gold.dim_drug_ingredient da on a.drug_id = da.id
 join gold.dim_drug_ingredient db on b.drug_id = db.id
-where fe.serious = 1
+where fe.serious
 group by 1, 2
 order by co_reported_events desc
 limit 20;
@@ -264,7 +278,9 @@ limit 20;
  
 ## Engineering highlights
  
-**Incremental loading** — all dbt models are incremental. Raw models track `source_file` (the bronze filename) to skip files already loaded. Intermediate models use `transmission_date` watermarks or event ID filters. Gold models use composite `unique_key` configs for upsert semantics.
+**Incremental loading** — staging models track `source_file` (the bronze filename) to skip files already loaded. Intermediate models are rebuilt as tables on each run. Gold uses upserts on `id` for `fact_event`, insert-only new keys for the dimension (stable surrogate ids), and `delete+insert` by `event_id` for the child fact tables so revised reports replace their old rows.
+
+**Data tests** — dbt generic tests on gold keys, foreign keys and accepted values, with descriptions for every column in `schema.yml`.
  
 **Checkpoint recovery** — the ingestion script saves the current URL and page number to `last_load_state.json` after every successful API response. On restart it picks up exactly where it left off, even mid-day with hundreds of pages.
  

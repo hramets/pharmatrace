@@ -10,7 +10,7 @@ models:
           - unique
           - not_null
       - name: transmission_date
-        description: "DATE the report record was created. Used as the incremental load watermark by the pipeline; not the date the event happened."
+        description: "DATE the report record was created. Not the date the event happened."
         data_tests:
           - not_null
       - name: receive_date

@@ -5,7 +5,7 @@
 		unique_key=[
 			'event_id'
 		],
-		incremental_strategy='delete+insert'
+		incremental_strategy='insert_overwrite',
 	) 
 }}
 
@@ -14,6 +14,3 @@ select
     reaction_name,
     reaction_outcome
 from {{ ref('int_event_reactions') }}
-{% if is_incremental() %}
-where event_id not in (select distinct event_id from {{ this }})
-{% endif %}

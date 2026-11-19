@@ -82,11 +82,6 @@ with cleaned as (
 		end as patient_sex,
 		cast(patientweight  as float) as patient_weight
 	from {{ref('stg_events_raw')}}
-	{% if is_incremental() %}
-	where cast(strptime(transmissiondate, '%Y%m%d') as date) >= (
-		select max(transmission_date) from {{ this }}
-	)
-	{% endif %}
 )
 
 select * from cleaned

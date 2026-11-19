@@ -5,7 +5,7 @@
 		unique_key=[
 			'event_id'
 		],
-		incremental_strategy='insert_overwrite',
+		incremental_strategy='delete+insert',
 	) 
 }}
 
